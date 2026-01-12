@@ -1,0 +1,427 @@
+import { Readability } from '@mozilla/readability';
+
+export default defineContentScript({
+  matches: ['<all_urls>'],
+  main() {
+    let isSelectionMode = false;
+    let hoveredElement: HTMLElement | null = null;
+    let overlay: HTMLDivElement | null = null;
+    let toast: HTMLDivElement | null = null;
+    
+    // Multi-select support
+    let selectedElements: Set<HTMLElement> = new Set();
+    let selectedOverlays: Map<HTMLElement, HTMLDivElement> = new Map();
+    
+    // Range selection anchors
+    let rangeStartAnchor: HTMLElement | null = null;
+    let rangeStartOverlay: HTMLDivElement | null = null;
+
+    function createOverlay() {
+      overlay = document.createElement('div');
+      overlay.id = 'feed2ai-overlay';
+      overlay.style.cssText = `
+        position: fixed;
+        pointer-events: none;
+        border: 2px solid #4CAF50;
+        background-color: rgba(76, 175, 80, 0.1);
+        z-index: 2147483647;
+        transition: all 0.1s ease;
+        display: none;
+      `;
+      document.body.appendChild(overlay);
+    }
+
+    function createSelectedOverlay(element: HTMLElement, color: string = '#2196F3'): HTMLDivElement {
+      const selectedOverlay = document.createElement('div');
+      selectedOverlay.className = 'feed2ai-selected-overlay';
+      const bgColor = color === '#FF9800' ? 'rgba(255, 152, 0, 0.2)' 
+                    : color === '#9C27B0' ? 'rgba(156, 39, 176, 0.2)'
+                    : 'rgba(33, 150, 243, 0.15)';
+      selectedOverlay.style.cssText = `
+        position: fixed;
+        pointer-events: none;
+        border: 2px solid ${color};
+        background-color: ${bgColor};
+        z-index: 2147483646;
+      `;
+      const rect = element.getBoundingClientRect();
+      selectedOverlay.style.top = `${rect.top}px`;
+      selectedOverlay.style.left = `${rect.left}px`;
+      selectedOverlay.style.width = `${rect.width}px`;
+      selectedOverlay.style.height = `${rect.height}px`;
+      document.body.appendChild(selectedOverlay);
+      return selectedOverlay;
+    }
+
+    function updateSelectedOverlays() {
+      selectedOverlays.forEach((overlay, element) => {
+        const rect = element.getBoundingClientRect();
+        overlay.style.top = `${rect.top}px`;
+        overlay.style.left = `${rect.left}px`;
+        overlay.style.width = `${rect.width}px`;
+        overlay.style.height = `${rect.height}px`;
+      });
+      // Update range start anchor overlay
+      if (rangeStartAnchor && rangeStartOverlay) {
+        const rect = rangeStartAnchor.getBoundingClientRect();
+        rangeStartOverlay.style.top = `${rect.top}px`;
+        rangeStartOverlay.style.left = `${rect.left}px`;
+        rangeStartOverlay.style.width = `${rect.width}px`;
+        rangeStartOverlay.style.height = `${rect.height}px`;
+      }
+    }
+
+    function createToast() {
+      toast = document.createElement('div');
+      toast.id = 'feed2ai-toast';
+      toast.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 24px;
+        background-color: #333;
+        color: white;
+        border-radius: 8px;
+        z-index: 2147483647;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 14px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        opacity: 0;
+        transition: opacity 0.3s ease;
+      `;
+      document.body.appendChild(toast);
+    }
+
+    function showToast(message: string, isSuccess: boolean = true, persistent: boolean = false) {
+      if (!toast) createToast();
+      if (toast) {
+        toast.textContent = message;
+        toast.style.backgroundColor = isSuccess ? '#4CAF50' : '#f44336';
+        toast.style.opacity = '1';
+        if (!persistent) {
+          setTimeout(() => {
+            if (toast) toast.style.opacity = '0';
+          }, 2000);
+        }
+      }
+    }
+
+    function updateOverlay(element: HTMLElement) {
+      if (!overlay) createOverlay();
+      if (overlay) {
+        const rect = element.getBoundingClientRect();
+        overlay.style.top = `${rect.top}px`;
+        overlay.style.left = `${rect.left}px`;
+        overlay.style.width = `${rect.width}px`;
+        overlay.style.height = `${rect.height}px`;
+        overlay.style.display = 'block';
+      }
+    }
+
+    function hideOverlay() {
+      if (overlay) {
+        overlay.style.display = 'none';
+      }
+    }
+
+    function clearRangeAnchors() {
+      if (rangeStartOverlay) {
+        rangeStartOverlay.remove();
+        rangeStartOverlay = null;
+      }
+      rangeStartAnchor = null;
+    }
+
+    function clearSelectedElements() {
+      selectedOverlays.forEach((overlay) => overlay.remove());
+      selectedOverlays.clear();
+      selectedElements.clear();
+      clearRangeAnchors();
+    }
+
+    function addToSelection(element: HTMLElement) {
+      if (!selectedElements.has(element)) {
+        selectedElements.add(element);
+        const overlay = createSelectedOverlay(element, '#2196F3');
+        selectedOverlays.set(element, overlay);
+      }
+    }
+
+    function removeFromSelection(element: HTMLElement) {
+      if (selectedElements.has(element)) {
+        selectedElements.delete(element);
+        const overlay = selectedOverlays.get(element);
+        if (overlay) {
+          overlay.remove();
+          selectedOverlays.delete(element);
+        }
+      }
+    }
+
+    function getElementsBetween(start: HTMLElement, end: HTMLElement): HTMLElement[] {
+      let ancestor: Node | null = start;
+      const startAncestors = new Set<Node>();
+      while (ancestor) {
+        startAncestors.add(ancestor);
+        ancestor = ancestor.parentNode;
+      }
+      
+      ancestor = end;
+      while (ancestor && !startAncestors.has(ancestor)) {
+        ancestor = ancestor.parentNode;
+      }
+      
+      const commonAncestor = ancestor as HTMLElement || document.body;
+      
+      const walker = document.createTreeWalker(
+        commonAncestor,
+        NodeFilter.SHOW_ELEMENT,
+        {
+          acceptNode: (node) => {
+            const el = node as HTMLElement;
+            if (el.id === 'feed2ai-overlay' || 
+                el.id === 'feed2ai-toast' ||
+                el.classList.contains('feed2ai-selected-overlay')) {
+              return NodeFilter.FILTER_REJECT;
+            }
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        }
+      );
+      
+      const elements: HTMLElement[] = [];
+      let startIndex = -1;
+      let endIndex = -1;
+      let index = 0;
+      
+      let node: Node | null = walker.currentNode;
+      while (node) {
+        if (node === start) startIndex = index;
+        if (node === end) endIndex = index;
+        elements.push(node as HTMLElement);
+        index++;
+        node = walker.nextNode();
+      }
+      
+      if (startIndex === -1 || endIndex === -1) {
+        return [end];
+      }
+      
+      const minIndex = Math.min(startIndex, endIndex);
+      const maxIndex = Math.max(startIndex, endIndex);
+      
+      return elements.slice(minIndex, maxIndex + 1);
+    }
+
+    function updateSelectionToast() {
+      if (selectedElements.size > 0) {
+        showToast(`Selected: ${selectedElements.size} item(s) (Enter: copy, ESC: cancel)`, true, true);
+      } else if (rangeStartAnchor) {
+        showToast('Range start set. Shift+click to select range', true, true);
+      } else {
+        showToast('Click to select (⌘: toggle, ⇧: range)', true, true);
+      }
+    }
+
+    function handleMouseOver(e: MouseEvent) {
+      if (!isSelectionMode) return;
+      const target = e.target as HTMLElement;
+      if (target && target !== hoveredElement && 
+          target.id !== 'feed2ai-overlay' && 
+          target.id !== 'feed2ai-toast' &&
+          !target.classList.contains('feed2ai-selected-overlay')) {
+        hoveredElement = target;
+        updateOverlay(target);
+      }
+    }
+
+    function handleMouseOut() {
+      if (!isSelectionMode) return;
+      hoveredElement = null;
+      hideOverlay();
+    }
+
+    async function handleClick(e: MouseEvent) {
+      if (!isSelectionMode) return;
+      
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const target = e.target as HTMLElement;
+      if (target.id === 'feed2ai-overlay' || 
+          target.id === 'feed2ai-toast' ||
+          target.classList.contains('feed2ai-selected-overlay')) return;
+
+      const isCtrlCmd = e.metaKey || e.ctrlKey;
+      const isShift = e.shiftKey;
+
+      if (isShift) {
+        if (!rangeStartAnchor) {
+          // Set start anchor
+          rangeStartAnchor = target;
+          rangeStartOverlay = createSelectedOverlay(target, '#FF9800');
+          updateSelectionToast();
+        } else {
+          // Set end anchor and select range
+          const elementsInRange = getElementsBetween(rangeStartAnchor, target);
+          for (const el of elementsInRange) {
+            addToSelection(el);
+          }
+          clearRangeAnchors();
+          updateSelectionToast();
+        }
+      } else if (isCtrlCmd) {
+        // Cancel range start if exists
+        if (rangeStartAnchor) {
+          clearRangeAnchors();
+        }
+        // Toggle selection
+        if (selectedElements.has(target)) {
+          removeFromSelection(target);
+        } else {
+          addToSelection(target);
+        }
+        updateSelectionToast();
+      } else {
+        // Cancel range start if exists
+        if (rangeStartAnchor) {
+          clearRangeAnchors();
+        }
+        // Single select: immediate copy and exit
+        exitSelectionMode();
+        try {
+          const html = target.outerHTML;
+          const cleanedContent = parseContent(html);
+          
+          if (cleanedContent) {
+            await navigator.clipboard.writeText(cleanedContent);
+            showToast('Content copied to clipboard!', true);
+          } else {
+            showToast('Failed to extract content', false);
+          }
+        } catch (error) {
+          console.error('Feed2AI error:', error);
+          showToast('Failed to copy content', false);
+        }
+      }
+    }
+
+    async function handleKeyDown(e: KeyboardEvent) {
+      if (!isSelectionMode) return;
+      
+      if (e.key === 'Escape') {
+        exitSelectionMode();
+        showToast('Selection cancelled', false);
+      } else if (e.key === 'Enter' && selectedElements.size > 0) {
+        e.preventDefault();
+        
+        try {
+          const sortedElements = Array.from(selectedElements).sort((a, b) => {
+            const position = a.compareDocumentPosition(b);
+            if (position & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+            if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+            return 0;
+          });
+          
+          // Filter out elements that are contained by other selected elements
+          const filteredElements = sortedElements.filter(el => {
+            return !sortedElements.some(other => other !== el && other.contains(el));
+          });
+          
+          const contents: string[] = [];
+          for (const element of filteredElements) {
+            const html = element.outerHTML;
+            const content = parseContent(html);
+            if (content) {
+              contents.push(content);
+            }
+          }
+          
+          const mergedContent = contents.join('\n\n');
+          const count = selectedElements.size;
+          
+          exitSelectionMode();
+          
+          if (mergedContent) {
+            await navigator.clipboard.writeText(mergedContent);
+            showToast(`${count} item(s) copied to clipboard!`, true);
+          } else {
+            showToast('Failed to extract content', false);
+          }
+        } catch (error) {
+          console.error('Feed2AI error:', error);
+          exitSelectionMode();
+          showToast('Failed to copy content', false);
+        }
+      }
+    }
+
+    function parseContent(html: string): string | null {
+      const doc = new DOMParser().parseFromString(
+        `<!DOCTYPE html><html><head><title>Feed2AI</title></head><body>${html}</body></html>`,
+        'text/html'
+      );
+      
+      const reader = new Readability(doc, {
+        charThreshold: 0,
+      });
+      
+      const article = reader.parse();
+      
+      if (article && article.textContent) {
+        return article.textContent
+          .replace(/\s+/g, ' ')
+          .replace(/\n\s*\n/g, '\n\n')
+          .trim();
+      }
+      
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = html;
+      return tempDiv.textContent?.trim() || null;
+    }
+
+    function enterSelectionMode() {
+      if (isSelectionMode) return;
+      isSelectionMode = true;
+      
+      if (!overlay) createOverlay();
+      if (!toast) createToast();
+      
+      document.body.style.cursor = 'crosshair';
+      
+      document.addEventListener('mouseover', handleMouseOver, true);
+      document.addEventListener('mouseout', handleMouseOut, true);
+      document.addEventListener('click', handleClick, true);
+      document.addEventListener('keydown', handleKeyDown, true);
+      document.addEventListener('scroll', updateSelectedOverlays, true);
+      
+      showToast('Click to select (⌘: toggle, ⇧: range)', true, true);
+    }
+
+    function exitSelectionMode() {
+      if (!isSelectionMode) return;
+      isSelectionMode = false;
+      
+      document.body.style.cursor = '';
+      hideOverlay();
+      clearSelectedElements();
+      
+      document.removeEventListener('mouseover', handleMouseOver, true);
+      document.removeEventListener('mouseout', handleMouseOut, true);
+      document.removeEventListener('click', handleClick, true);
+      document.removeEventListener('keydown', handleKeyDown, true);
+      document.removeEventListener('scroll', updateSelectedOverlays, true);
+    }
+
+    browser.runtime.onMessage.addListener((message) => {
+      if (message.action === 'startSelection') {
+        enterSelectionMode();
+        return Promise.resolve({ success: true });
+      }
+      if (message.action === 'stopSelection') {
+        exitSelectionMode();
+        return Promise.resolve({ success: true });
+      }
+    });
+  },
+});
