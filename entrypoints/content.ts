@@ -1,7 +1,7 @@
 import { Readability } from '@mozilla/readability';
 
 export default defineContentScript({
-  matches: ['<all_urls>'],
+  matches: [],
   main() {
     let isSelectionMode = false;
     let hoveredElement: HTMLElement | null = null;

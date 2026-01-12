@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4F46E5"/>
+      <stop offset="100%" style="stop-color:#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="docGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFFFFF"/>
+      <stop offset="100%" style="stop-color:#E0E7FF"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background circle -->
+  <circle cx="64" cy="64" r="60" fill="url(#bgGrad)"/>
+  
+  <!-- Document icon (left side) -->
+  <g transform="translate(20, 28)">
+    <!-- Document body -->
+    <rect x="0" y="0" width="40" height="52" rx="4" fill="url(#docGrad)"/>
+    <!-- Document lines (content) -->
+    <rect x="6" y="10" width="28" height="4" rx="2" fill="#A5B4FC"/>
+    <rect x="6" y="20" width="24" height="4" rx="2" fill="#A5B4FC"/>
+    <rect x="6" y="30" width="28" height="4" rx="2" fill="#A5B4FC"/>
+    <rect x="6" y="40" width="18" height="4" rx="2" fill="#A5B4FC"/>
+  </g>
+  
+  <!-- Arrow (flow indicator) -->
+  <g transform="translate(58, 54)">
+    <path d="M0 10 L20 10 L20 0 L35 15 L20 30 L20 20 L0 20 Z" fill="#FFFFFF" opacity="0.95"/>
+  </g>
+  
+  <!-- AI circle (right side) -->
+  <circle cx="100" cy="64" r="18" fill="#FFFFFF" opacity="0.95"/>
+  <text x="100" y="70" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#7C3AED" text-anchor="middle">AI</text>
+</svg>
