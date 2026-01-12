@@ -6,7 +6,7 @@ export default defineBackground(() => {
         // Programmatically inject content script
         await browser.scripting.executeScript({
           target: { tabId: tab.id },
-          files: ['content-scripts/content.js']
+          files: ['injected.js']
         });
         await browser.tabs.sendMessage(tab.id, { action: 'startSelection' });
       } catch (error) {

@@ -1,8 +1,6 @@
 import { Readability } from '@mozilla/readability';
 
-export default defineContentScript({
-  matches: ['<all_urls>'],
-  main() {
+export default defineUnlistedScript(() => {
     let isSelectionMode = false;
     let hoveredElement: HTMLElement | null = null;
     let overlay: HTMLDivElement | null = null;
@@ -423,5 +421,4 @@ export default defineContentScript({
         return Promise.resolve({ success: true });
       }
     });
-  },
 });
