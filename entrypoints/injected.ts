@@ -1,4 +1,5 @@
-import { Readability } from '@mozilla/readability';
+import TurndownService from 'turndown';
+import { gfm } from 'turndown-plugin-gfm';
 
 export default defineUnlistedScript(() => {
     let isSelectionMode = false;
@@ -354,28 +355,60 @@ export default defineUnlistedScript(() => {
       }
     }
 
-    function parseContent(html: string): string | null {
-      const doc = new DOMParser().parseFromString(
-        `<!DOCTYPE html><html><head><title>Feed2AI</title></head><body>${html}</body></html>`,
-        'text/html'
-      );
-      
-      const reader = new Readability(doc, {
-        charThreshold: 0,
-      });
-      
-      const article = reader.parse();
-      
-      if (article && article.textContent) {
-        return article.textContent
-          .replace(/\s+/g, ' ')
-          .replace(/\n\s*\n/g, '\n\n')
-          .trim();
+    // Initialize Turndown service with GFM support
+    const turndownService = new TurndownService({
+      headingStyle: 'atx',
+      codeBlockStyle: 'fenced',
+      bulletListMarker: '-',
+    });
+    turndownService.use(gfm);
+
+    // Custom rule for CodeMirror code blocks
+    turndownService.addRule('codemirror', {
+      filter: (node) => {
+        return node.classList?.contains('CodeMirror') || 
+               node.classList?.contains('CodeMirror-code');
+      },
+      replacement: (_content, node) => {
+        const element = node as HTMLElement;
+        
+        // Try to get original code from adjacent textarea (CodeMirror usually preserves it)
+        const codeMirror = element.closest('.CodeMirror');
+        const textarea = codeMirror?.parentElement?.querySelector('textarea');
+        if (textarea && (textarea as HTMLTextAreaElement).value) {
+          return '\n```\n' + (textarea as HTMLTextAreaElement).value.trim() + '\n```\n';
+        }
+        
+        // Otherwise extract text from CodeMirror-line elements
+        const lines: string[] = [];
+        element.querySelectorAll('.CodeMirror-line').forEach(line => {
+          lines.push(line.textContent || '');
+        });
+        
+        const code = lines.join('\n').trim();
+        return code ? '\n```\n' + code + '\n```\n' : '';
       }
-      
-      const tempDiv = document.createElement('div');
-      tempDiv.innerHTML = html;
-      return tempDiv.textContent?.trim() || null;
+    });
+
+    // Remove line numbers from output
+    turndownService.addRule('codemirror-linenumber', {
+      filter: (node) => {
+        return node.classList?.contains('CodeMirror-linenumber') ||
+               node.classList?.contains('CodeMirror-gutter');
+      },
+      replacement: () => ''
+    });
+
+    function parseContent(html: string): string | null {
+      try {
+        const markdown = turndownService.turndown(html);
+        return markdown.trim() || null;
+      } catch (error) {
+        console.error('Feed2AI parse error:', error);
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = html;
+        return tempDiv.textContent?.trim() || null;
+      }
     }
 
     function enterSelectionMode() {
