@@ -15,6 +15,51 @@ export default defineUnlistedScript(() => {
     let rangeStartAnchor: HTMLElement | null = null;
     let rangeStartOverlay: HTMLDivElement | null = null;
 
+    // Performance: Throttle function
+    function throttle<T extends (...args: unknown[]) => void>(fn: T, delay: number): T {
+      let lastCall = 0;
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      return ((...args: unknown[]) => {
+        const now = Date.now();
+        const remaining = delay - (now - lastCall);
+        if (remaining <= 0) {
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+          lastCall = now;
+          fn(...args);
+        } else if (!timeoutId) {
+          timeoutId = setTimeout(() => {
+            lastCall = Date.now();
+            timeoutId = null;
+            fn(...args);
+          }, remaining);
+        }
+      }) as T;
+    }
+
+    // Async content parsing using requestIdleCallback
+    function parseContentAsync(html: string): Promise<string | null> {
+      return new Promise((resolve) => {
+        const idleCallback = window.requestIdleCallback || ((cb: () => void) => setTimeout(cb, 1));
+        idleCallback(() => {
+          try {
+            const markdown = turndownService.turndown(html);
+            resolve(markdown.trim() || null);
+          } catch (error) {
+            console.error('Feed2AI parse error:', error);
+            // Fallback to plain text
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = html;
+            resolve(tempDiv.textContent?.trim() || null);
+          }
+        }, { timeout: 2000 });
+      });
+    }
+
+
+
     function createOverlay() {
       overlay = document.createElement('div');
       overlay.id = 'feed2ai-overlay';
@@ -146,6 +191,21 @@ export default defineUnlistedScript(() => {
       }
     }
 
+    // Async batch add for range selection - prevents UI freeze
+    async function addElementsToSelectionAsync(elements: HTMLElement[]): Promise<void> {
+      const BATCH_SIZE = 50;
+      for (let i = 0; i < elements.length; i += BATCH_SIZE) {
+        const batch = elements.slice(i, i + BATCH_SIZE);
+        for (const el of batch) {
+          addToSelection(el);
+        }
+        const progress = Math.min(i + BATCH_SIZE, elements.length);
+        showToast(`Selecting ${progress}/${elements.length}...`, true, true);
+        // Yield to main thread
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
     function removeFromSelection(element: HTMLElement) {
       if (selectedElements.has(element)) {
         selectedElements.delete(element);
@@ -194,7 +254,9 @@ export default defineUnlistedScript(() => {
       let index = 0;
       
       let node: Node | null = walker.currentNode;
-      while (node) {
+      // Performance: limit total elements scanned
+      const MAX_SCAN = 10000;
+      while (node && index < MAX_SCAN) {
         if (node === start) startIndex = index;
         if (node === end) endIndex = index;
         elements.push(node as HTMLElement);
@@ -263,10 +325,9 @@ export default defineUnlistedScript(() => {
         } else {
           // Set end anchor and select range
           const elementsInRange = getElementsBetween(rangeStartAnchor, target);
-          for (const el of elementsInRange) {
-            addToSelection(el);
-          }
           clearRangeAnchors();
+          // Use async batch add to prevent UI freeze
+          await addElementsToSelectionAsync(elementsInRange);
           updateSelectionToast();
         }
       } else if (isCtrlCmd) {
@@ -288,9 +349,10 @@ export default defineUnlistedScript(() => {
         }
         // Single select: immediate copy and exit
         exitSelectionMode();
+        showToast('Processing...', true, true);
         try {
           const html = target.outerHTML;
-          const cleanedContent = parseContent(html);
+          const cleanedContent = await parseContentAsync(html);
           
           if (cleanedContent) {
             await navigator.clipboard.writeText(cleanedContent);
@@ -314,6 +376,9 @@ export default defineUnlistedScript(() => {
       } else if (e.key === 'Enter' && selectedElements.size > 0) {
         e.preventDefault();
         
+        const count = selectedElements.size;
+        showToast(`Processing ${count} item(s)...`, true, true);
+        
         try {
           const sortedElements = Array.from(selectedElements).sort((a, b) => {
             const position = a.compareDocumentPosition(b);
@@ -327,17 +392,25 @@ export default defineUnlistedScript(() => {
             return !sortedElements.some(other => other !== el && other.contains(el));
           });
           
+          // Process elements in chunks to avoid blocking UI
           const contents: string[] = [];
-          for (const element of filteredElements) {
-            const html = element.outerHTML;
-            const content = parseContent(html);
-            if (content) {
-              contents.push(content);
+          const chunkSize = 500;
+          for (let i = 0; i < filteredElements.length; i += chunkSize) {
+            const chunk = filteredElements.slice(i, i + chunkSize);
+            const chunkResults = await Promise.all(
+              chunk.map(el => parseContentAsync(el.outerHTML))
+            );
+            for (const content of chunkResults) {
+              if (content) contents.push(content);
             }
+            // Update progress
+            const processed = Math.min(i + chunkSize, filteredElements.length);
+            showToast(`Processing ${processed}/${filteredElements.length}...`, true, true);
+            // Yield to main thread
+            await new Promise(r => setTimeout(r, 0));
           }
           
           const mergedContent = contents.join('\n\n');
-          const count = selectedElements.size;
           
           exitSelectionMode();
           
@@ -399,17 +472,8 @@ export default defineUnlistedScript(() => {
       replacement: () => ''
     });
 
-    function parseContent(html: string): string | null {
-      try {
-        const markdown = turndownService.turndown(html);
-        return markdown.trim() || null;
-      } catch (error) {
-        console.error('Feed2AI parse error:', error);
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = html;
-        return tempDiv.textContent?.trim() || null;
-      }
-    }
+    // Throttled scroll handler for better performance
+    const throttledUpdateOverlays = throttle(updateSelectedOverlays, 16); // ~60fps
 
     function enterSelectionMode() {
       if (isSelectionMode) return;
@@ -424,7 +488,7 @@ export default defineUnlistedScript(() => {
       document.addEventListener('mouseout', handleMouseOut, true);
       document.addEventListener('click', handleClick, true);
       document.addEventListener('keydown', handleKeyDown, true);
-      document.addEventListener('scroll', updateSelectedOverlays, true);
+      document.addEventListener('scroll', throttledUpdateOverlays, true);
       
       showToast('Click to select (⌘: toggle, ⇧: range)', true, true);
     }
@@ -441,7 +505,8 @@ export default defineUnlistedScript(() => {
       document.removeEventListener('mouseout', handleMouseOut, true);
       document.removeEventListener('click', handleClick, true);
       document.removeEventListener('keydown', handleKeyDown, true);
-      document.removeEventListener('scroll', updateSelectedOverlays, true);
+      document.removeEventListener('scroll', throttledUpdateOverlays, true);
+      
     }
 
     browser.runtime.onMessage.addListener((message) => {
