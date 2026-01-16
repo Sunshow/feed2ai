@@ -434,6 +434,60 @@ export default defineUnlistedScript(() => {
       codeBlockStyle: 'fenced',
       bulletListMarker: '-',
     });
+    
+    // Helper function to convert a table element to markdown
+    function tableToMarkdown(table: HTMLTableElement): string {
+      const rows = Array.from(table.rows);
+      if (rows.length === 0) return '';
+
+      const markdownRows: string[] = [];
+
+      rows.forEach((row, rowIndex) => {
+        const cells = Array.from(row.cells);
+        const cellTexts = cells.map(cell => {
+          let text = (cell.textContent || '')
+            .replace(/[\u200B-\u200D\uFEFF]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          return text.replace(/\|/g, '\\|');
+        });
+
+        markdownRows.push('| ' + cellTexts.join(' | ') + ' |');
+
+        if (rowIndex === 0) {
+          markdownRows.push('| ' + cells.map(() => '---').join(' | ') + ' |');
+        }
+      });
+
+      return '\n\n' + markdownRows.join('\n') + '\n\n';
+    }
+
+    // Rule for container divs that wrap tables (e.g., Feishu docx-table-block)
+    turndownService.addRule('table-container', {
+      filter: (node) => {
+        if (node.nodeName !== 'DIV') return false;
+        // Check if this div contains a table but is not just a simple wrapper
+        const table = (node as HTMLElement).querySelector('table');
+        return table !== null && node.closest('table') === null;
+      },
+      replacement: (_content, node) => {
+        const element = node as HTMLElement;
+        const table = element.querySelector('table');
+        if (!table) return _content;
+        return tableToMarkdown(table as HTMLTableElement);
+      }
+    });
+
+    // Add table rule BEFORE gfm to handle tables without <th> (e.g., Feishu/Lark docs)
+    // This must be added before gfm because gfm's keep() rule would otherwise preserve them as HTML
+    turndownService.addRule('table-all', {
+      filter: 'table',
+      replacement: (_content, node) => {
+        return tableToMarkdown(node as HTMLTableElement);
+      }
+    });
+    
+    // Use gfm for other features (strikethrough, task lists, etc.) but our table rule takes precedence
     turndownService.use(gfm);
 
     // Custom rule for CodeMirror code blocks
