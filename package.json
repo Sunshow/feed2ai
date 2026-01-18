@@ -2,7 +2,7 @@
   "name": "feed2ai",
   "description": "Extract and clean web content for feeding to AI assistants",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "wxt",
