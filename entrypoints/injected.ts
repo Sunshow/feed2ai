@@ -276,7 +276,7 @@ export default defineUnlistedScript(() => {
 
     function updateSelectionToast() {
       if (selectedElements.size > 0) {
-        showToast(`Selected: ${selectedElements.size} item(s) (Enter: copy, ESC: cancel)`, true, true);
+        showToast(`Selected: ${selectedElements.size} item(s) (Enter: copy, ⇧Enter: raw HTML, ESC: cancel)`, true, true);
       } else if (rangeStartAnchor) {
         showToast('Range start set. Shift+click to select range', true, true);
       } else {
@@ -373,7 +373,36 @@ export default defineUnlistedScript(() => {
       if (e.key === 'Escape') {
         exitSelectionMode();
         showToast('Selection cancelled', false);
-      } else if (e.key === 'Enter' && selectedElements.size > 0) {
+      } else if (e.key === 'Enter' && e.shiftKey && selectedElements.size > 0) {
+        // Shift+Enter: Copy raw HTML
+        e.preventDefault();
+        
+        const count = selectedElements.size;
+        
+        try {
+          const sortedElements = Array.from(selectedElements).sort((a, b) => {
+            const position = a.compareDocumentPosition(b);
+            if (position & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+            if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+            return 0;
+          });
+          
+          const filteredElements = sortedElements.filter(el => {
+            return !sortedElements.some(other => other !== el && other.contains(el));
+          });
+          
+          const rawHtml = filteredElements.map(el => el.outerHTML).join('\n\n');
+          
+          exitSelectionMode();
+          
+          await navigator.clipboard.writeText(rawHtml);
+          showToast(`${count} item(s) raw HTML copied!`, true);
+        } catch (error) {
+          console.error('Feed2AI error:', error);
+          exitSelectionMode();
+          showToast('Failed to copy raw HTML', false);
+        }
+      } else if (e.key === 'Enter' && !e.shiftKey && selectedElements.size > 0) {
         e.preventDefault();
         
         const count = selectedElements.size;
@@ -466,9 +495,9 @@ export default defineUnlistedScript(() => {
     turndownService.addRule('table-container', {
       filter: (node) => {
         if (node.nodeName !== 'DIV') return false;
-        // Check if this div contains a table but is not just a simple wrapper
-        const table = (node as HTMLElement).querySelector('table');
-        return table !== null && node.closest('table') === null;
+        // Only match Feishu table block containers specifically
+        return node.classList?.contains('docx-table-block') ||
+               node.classList?.contains('docx-table-inner-wrapper');
       },
       replacement: (_content, node) => {
         const element = node as HTMLElement;
@@ -489,6 +518,46 @@ export default defineUnlistedScript(() => {
     
     // Use gfm for other features (strikethrough, task lists, etc.) but our table rule takes precedence
     turndownService.use(gfm);
+
+    // Rule for Feishu/Lark docx-code-block
+    turndownService.addRule('feishu-code-block', {
+      filter: (node) => {
+        return node.classList?.contains('docx-code-block') ||
+               (node.classList?.contains('code-block') && 
+                node.querySelector('.ace-line') !== null);
+      },
+      replacement: (_content, node) => {
+        const element = node as HTMLElement;
+        const lines: string[] = [];
+        
+        // Extract language from header if available
+        const langBtn = element.querySelector('.code-block-header-btn span');
+        const lang = langBtn?.textContent?.toLowerCase() || '';
+        
+        // Extract code lines from ace-line elements
+        element.querySelectorAll('.ace-line').forEach(line => {
+          const lineWrapper = line.querySelector('.code-line-wrapper');
+          if (lineWrapper) {
+            // Get text content, excluding fold controllers
+            let text = '';
+            lineWrapper.childNodes.forEach(child => {
+              const el = child as Element;
+              if (child.nodeType === Node.TEXT_NODE) {
+                text += child.textContent || '';
+              } else if (el.tagName === 'SPAN' && 
+                         !el.classList?.contains('code-block-fold-controller--wrapper')) {
+                text += el.textContent || '';
+              }
+            });
+            // Remove zero-width spaces and trailing markers
+            lines.push(text.replace(/[\u200B-\u200D\uFEFF]/g, ''));
+          }
+        });
+        
+        const code = lines.join('\n').trim();
+        return code ? '\n```' + lang + '\n' + code + '\n```\n' : '';
+      }
+    });
 
     // Custom rule for CodeMirror code blocks
     turndownService.addRule('codemirror', {
